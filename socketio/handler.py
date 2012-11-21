@@ -12,7 +12,7 @@ class SocketIOHandler(WSGIHandler):
     RE_REQUEST_URL = re.compile(r"""
         ^/(?P<resource>[^/]+)
          /(?P<protocol_version>[^/]+)
-         /(?P<transport_id>[^/]+)
+         /(?P<transport_id>[^/]*)
          /(?P<sessid>[^/]+)/?$
          """, re.X)
     RE_HANDSHAKE_URL = re.compile(r"^/(?P<resource>[^/]+)/1/$", re.X)
@@ -108,6 +108,7 @@ class SocketIOHandler(WSGIHandler):
         # (read: websocket or xhr-polling methods)
         request_method = self.environ.get("REQUEST_METHOD")
         request_tokens = self.RE_REQUEST_URL.match(path)
+        query_tokens = urlparse.parse_qs(self.environ.get("QUERY_STRING"))
         handshake_tokens = self.RE_HANDSHAKE_URL.match(path)
 
         if handshake_tokens:
@@ -128,6 +129,11 @@ class SocketIOHandler(WSGIHandler):
             self.handle_bad_request()
             return []  # Do not say the session is not found, just bad request
                        # so they don't start brute forcing to find open sessions
+
+        if query_tokens.get('disconnect'):
+            self.write_smart('')
+            socket.kill()
+            return
 
         # Setup transport
         transport = self.handler_types.get(tokens["transport_id"])
