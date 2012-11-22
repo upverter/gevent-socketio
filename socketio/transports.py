@@ -155,8 +155,8 @@ class XHRPollingTransport(BaseTransport):
 
 
 class JSONPolling(XHRPollingTransport):
-    def __init__(self, handler):
-        super(JSONPolling, self).__init__(handler)
+    def __init__(self, handler, config):
+        super(JSONPolling, self).__init__(handler, config)
         self.content_type = ("Content-Type", "text/javascript; charset=UTF-8")
 
     def _request_body(self):
@@ -249,7 +249,9 @@ class WebsocketTransport(BaseTransport):
                     break
                 try:
                     websocket.send(message)
-                except WebSocketError:
+                except (WebSocketError, TypeError):
+                    # We can't send a message on the socket
+                    # it is dead, let the other sockets know
                     socket.disconnect()
 
         def read_from_ws():
@@ -273,8 +275,8 @@ class FlashSocketTransport(WebsocketTransport):
 class HTMLFileTransport(XHRPollingTransport):
     """Not tested at all!"""
 
-    def __init__(self, handler):
-        super(HTMLFileTransport, self).__init__(handler)
+    def __init__(self, handler, config):
+        super(HTMLFileTransport, self).__init__(handler, config)
         self.content_type = ("Content-Type", "text/html")
 
     def write_packed(self, data):

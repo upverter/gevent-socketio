@@ -176,8 +176,10 @@ class SocketIOHandler(WSGIHandler):
             except:
                 self.handle_error(*sys.exc_info())
 
-        # That's all we needed, do the exchanges, and let go the
-        # current greenlet!  Less leaking thank you :)
+        # we need to keep the connection open if we are an open socket
+        if tokens['transport_id'] in ['flashsocket', 'websocket']:
+            # wait here for all jobs to finished, when they are done
+            gevent.joinall(socket.jobs)
 
     def handle_bad_request(self):
         self.close_connection = True
