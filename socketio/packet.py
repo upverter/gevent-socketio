@@ -57,15 +57,35 @@ def encode(data, json_dumps=default_json_dumps):
         # If the message id is followed by a +, the ACK is not handled by
         # socket.io, but by the user instead.
         if msg == '3':
-            payload = data['data']
+            if hasattr(data['data'], 'read'):
+                payload = data['data'].read()
+            else:
+                payload = data['data']
         if msg == '4':
-            payload = json_dumps(data['data'])
+            if type(data['data']) is str:
+                payload = data['data']
+            elif hasattr(data['data'], 'read'):
+                payload = data['data'].read()
+            else:
+                payload = json_dumps(data['data'])
         if msg == '5':
-            d = {}
-            d['name'] = data['name']
+            # Build json string up manually so that the args can inlcude file like objects
+            d = ['{']
+            d.extend(['"name":', json_dumps(data['name'])])
             if 'args' in data and data['args'] != []:
-                d['args'] = data['args']
-            payload = json_dumps(d)
+                d.append(',"args":[')
+                needs_comma = False
+                for arg in data['args']:
+                    if needs_comma:
+                        d.append(',')
+                    if hasattr(arg, 'read'):
+                        d.append(arg.read())
+                    else:
+                        d.append(json_dumps(arg))
+                    needs_comma = True
+                d.append(']')
+            d.append('}')
+            payload = ''.join(d)
         if 'id' in data:
             msg += ':' + str(data['id'])
             if data['ack'] == 'data':
