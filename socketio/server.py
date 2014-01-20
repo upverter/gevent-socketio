@@ -8,6 +8,7 @@ from gevent.pywsgi import WSGIServer
 from socketio.handler import SocketIOHandler
 from socketio.policyserver import FlashPolicyServer
 from socketio.virtsocket import Socket
+from geventwebsocket.handler import WebSocketHandler
 
 __all__ = ['SocketIOServer']
 
@@ -29,7 +30,7 @@ class SocketIOServer(WSGIServer):
         :param policy_server: Boolean describing whether or not to use the
             Flash policy server.  Default True.
 
-        :param policy_listener : A tuple containing (host, port) for the
+        :param policy_listener: A tuple containing (host, port) for the
             policy server.  This is optional and used only if policy server
             is set to true.  The default value is 0.0.0.0:843
 
@@ -47,6 +48,10 @@ class SocketIOServer(WSGIServer):
             re open of the connection. This value is sent to the
             client after a successful handshake.
 
+        :param log_file: str The file in which you want the PyWSGI
+            server to write its access log.  If not specified, it
+            is sent to `stderr` (with gevent 0.13).
+
         """
         self.sockets = {}
         if 'namespace' in kwargs:
@@ -61,7 +66,10 @@ class SocketIOServer(WSGIServer):
             try:
                 address = args[0][0]
             except TypeError:
-                address = args[0].address[0]
+                try:
+                    address = args[0].address[0]
+                except AttributeError:
+                    address = args[0].cfg_addr[0]
             policylistener = kwargs.pop('policy_listener', (address, 10843))
             self.policy_server = FlashPolicyServer(policylistener)
         else:
@@ -77,7 +85,19 @@ class SocketIOServer(WSGIServer):
             if f in kwargs:
                 self.config[f] = int(kwargs.pop(f))
 
-        kwargs['handler_class'] = SocketIOHandler
+        if not 'handler_class' in kwargs:
+            kwargs['handler_class'] = SocketIOHandler
+
+
+        if not 'ws_handler_class' in kwargs:
+            self.ws_handler_class = WebSocketHandler
+        else:
+            self.ws_handler_class = kwargs.pop('ws_handler_class')
+
+        log_file = kwargs.pop('log_file', None)
+        if log_file:
+            kwargs['log'] = open(log_file, 'a')
+
         super(SocketIOServer, self).__init__(*args, **kwargs)
 
     def start_accepting(self):

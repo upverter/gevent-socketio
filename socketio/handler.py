@@ -5,17 +5,23 @@ import urlparse
 
 from gevent.pywsgi import WSGIHandler
 from socketio import transports
-from geventwebsocket.handler import WebSocketHandler
-
 
 class SocketIOHandler(WSGIHandler):
     RE_REQUEST_URL = re.compile(r"""
-        ^/(?P<resource>[^/]+)
-         /(?P<protocol_version>[^/]+)
-         /(?P<transport_id>[^/]*)
+        ^/(?P<resource>.+?)
+         /1
+         /(?P<transport_id>[^/]+)
          /(?P<sessid>[^/]+)/?$
          """, re.X)
-    RE_HANDSHAKE_URL = re.compile(r"^/(?P<resource>[^/]+)/1/$", re.X)
+    RE_HANDSHAKE_URL = re.compile(r"^/(?P<resource>.+?)/1/$", re.X)
+    # new socket.io versions (> 0.9.8) call an obscure url with two slashes
+    # instead of a transport when disconnecting
+    # https://github.com/LearnBoost/socket.io-client/blob/0.9.16/lib/socket.js#L361
+    RE_DISCONNECT_URL = re.compile(r"""
+        ^/(?P<resource>.+?)
+         /(?P<protocol_version>[^/]+)
+         //(?P<sessid>[^/]+)/?$
+         """, re.X)
 
     handler_types = {
         'websocket': transports.WebsocketTransport,
@@ -45,7 +51,6 @@ class SocketIOHandler(WSGIHandler):
             if not set(self.transports).issubset(set(self.handler_types)):
                 raise ValueError("transports should be elements of: %s" %
                     (self.handler_types.keys()))
-
 
     def _do_handshake(self, tokens):
         if tokens["resource"] != self.server.resource:
@@ -94,7 +99,7 @@ class SocketIOHandler(WSGIHandler):
         path = self.environ.get('PATH_INFO')
 
         # Kick non-socket.io requests to our superclass
-        if not path.lstrip('/').startswith(self.server.resource):
+        if not path.lstrip('/').startswith(self.server.resource + '/'):
             return super(SocketIOHandler, self).handle_one_response()
 
         self.status = None
@@ -110,11 +115,15 @@ class SocketIOHandler(WSGIHandler):
         request_tokens = self.RE_REQUEST_URL.match(path)
         query_tokens = urlparse.parse_qs(self.environ.get("QUERY_STRING"))
         handshake_tokens = self.RE_HANDSHAKE_URL.match(path)
+        disconnect_tokens = self.RE_DISCONNECT_URL.match(path)
 
         if handshake_tokens:
             # Deal with first handshake here, create the Socket and push
             # the config up.
             return self._do_handshake(handshake_tokens.groupdict())
+        elif disconnect_tokens:
+            # it's a disconnect request via XHR
+            tokens = disconnect_tokens.groupdict()
         elif request_tokens:
             tokens = request_tokens.groupdict()
             # and continue...
@@ -130,19 +139,24 @@ class SocketIOHandler(WSGIHandler):
             return []  # Do not say the session is not found, just bad request
                        # so they don't start brute forcing to find open sessions
 
-        if query_tokens.get('disconnect'):
-            self.write_smart('')
-            socket.kill()
-            return
+        if self.environ['QUERY_STRING'].startswith('disconnect'):
+            # according to socket.io specs disconnect requests
+            # have a `disconnect` query string
+            # https://github.com/LearnBoost/socket.io-spec#forced-socket-disconnection
+            socket.disconnect()
+            self.handle_disconnect_request()
+            return []
 
         # Setup transport
         transport = self.handler_types.get(tokens["transport_id"])
 
         # In case this is WebSocket request, switch to the WebSocketHandler
         # FIXME: fix this ugly class change
+        old_class = None
         if issubclass(transport, (transports.WebsocketTransport,
                                   transports.FlashSocketTransport)):
-            self.__class__ = WebSocketHandler
+            old_class = self.__class__
+            self.__class__ = self.server.ws_handler_class
             self.prevent_wsgi_call = True  # thank you
             # TODO: any errors, treat them ??
             self.handle_one_response()  # does the Websocket dance before we continue
@@ -181,9 +195,31 @@ class SocketIOHandler(WSGIHandler):
             # wait here for all jobs to finished, when they are done
             gevent.joinall(socket.jobs)
 
+        # Switch back to the old class so references to this don't use the
+        # incorrect class. Useful for debugging.
+        if old_class:
+            self.__class__ = old_class
+
+        # Clean up circular references so they can be garbage collected.
+        if hasattr(self, 'websocket') and self.websocket:
+            if hasattr(self.websocket, 'environ'):
+                del self.websocket.environ
+            del self.websocket
+        if self.environ:
+            del self.environ
+
     def handle_bad_request(self):
         self.close_connection = True
         self.start_response("400 Bad Request", [
+            ('Content-Type', 'text/plain'),
+            ('Connection', 'close'),
+            ('Content-Length', 0)
+        ])
+
+
+    def handle_disconnect_request(self):
+        self.close_connection = True
+        self.start_response("200 OK", [
             ('Content-Type', 'text/plain'),
             ('Connection', 'close'),
             ('Content-Length', 0)

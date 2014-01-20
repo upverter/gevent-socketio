@@ -27,6 +27,10 @@ class BaseNamespace(object):
       def on_my_second_event(self, whatever):
           print "This holds the first arg that was passed", whatever
 
+    Handlers are automatically dispatched based on the name of the incoming
+    event. For example, a 'user message' event will be handled by
+    ``on_user_message()``. To change this, override :meth:`process_event`.
+    
     We can also access the full packet directly by making an event handler
     that accepts a single argument named 'packet':
 
@@ -43,9 +47,11 @@ class BaseNamespace(object):
         self.session = self.socket.session  # easily accessible session
         self.request = request
         self.ns_name = ns_name
-        self.allowed_methods = None  # be careful, None means all methods
-                                     # are allowed while an empty list
-                                     # means totally closed.
+        #: Store for ACL allowed methods.  Be careful as ``None`` means
+        #: that all methods are allowed, while an empty list means every
+        #: method is denied.  Value: list of strings or ``None``.  You
+        #: can and should use the various ``acl`` methods to tweak this.
+        self.allowed_methods = None
         self.jobs = []
 
         self.reset_acl()
@@ -95,7 +101,7 @@ class BaseNamespace(object):
         access to all of the ``on_*()`` and ``recv_*()`` functions,
         etc.. methods.
 
-        Return something like: ``['on_connect', 'on_public_method']``
+        Return something like: ``set(['recv_connect', 'on_public_method'])``
 
         You can later modify this list dynamically (inside
         ``on_connect()`` for example) using:
@@ -113,6 +119,9 @@ class BaseNamespace(object):
 
         **Beware**, returning ``None`` leaves the namespace completely
         accessible.
+
+        The methods that are open are stored in the ``allowed_methods``
+        attribute of the ``Namespace`` instance.
         """
         return None
 
@@ -240,12 +249,17 @@ class BaseNamespace(object):
         Those are the two behaviors:
 
         * If there is only one parameter on the dispatched method and
-          it is equal to ``packet``, then pass in the packet as the
+          it is named ``packet``, then pass in the packet dict as the
           sole parameter.
 
         * Otherwise, pass in the arguments as specified by the
           different ``recv_*()`` methods args specs, or the
           :meth:`process_event` documentation.
+
+        This method will also consider the
+        ``exception_handler_decorator``.  See Namespace documentation
+        for details and examples.
+
         """
         method = getattr(self, method_name, None)
         if method is None:
@@ -260,6 +274,11 @@ class BaseNamespace(object):
                 "The server-side method is invalid, as it doesn't "
                 "have 'self' as its first argument")
             return
+
+        # Check if we need to decorate to handle exceptions
+        if hasattr(self, 'exception_handler_decorator'):
+            method = self.exception_handler_decorator(method)
+
         if len(func_args) == 2 and func_args[1] == 'packet':
             return method(packet)
         else:
@@ -449,8 +468,14 @@ class BaseNamespace(object):
         It will be monitored by the "watcher" process in the Socket. If the
         socket disconnects, all these greenlets are going to be killed, after
         calling BaseNamespace.disconnect()
+
+        This method uses the ``exception_handler_decorator``.  See
+        Namespace documentation for more information.
+
         """
         # self.log.debug("Spawning sub-Namespace Greenlet: %s" % fn.__name__)
+        if hasattr(self, 'exception_handler_decorator'):
+            fn = self.exception_handler_decorator(fn)
         new = gevent.spawn(fn, *args, **kwargs)
         self.jobs.append(new)
         return new
@@ -471,8 +496,12 @@ class BaseNamespace(object):
             packet = {"type": "disconnect",
                       "endpoint": self.ns_name}
             self.socket.send_packet(packet)
-        self.socket.remove_namespace(self.ns_name)
-        self.kill_local_jobs()
+        # remove_namespace might throw GreenletExit so
+        # kill_local_jobs must be in finally
+        try:
+            self.socket.remove_namespace(self.ns_name)
+        finally:
+            self.kill_local_jobs()
 
     def kill_local_jobs(self):
         """Kills all the jobs spawned with BaseNamespace.spawn() on a namespace

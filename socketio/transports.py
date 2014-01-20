@@ -32,13 +32,13 @@ class BaseTransport(object):
             if 'Content-Length' not in self.handler.response_headers_list:
                 self.handler.response_headers.append(('Content-Length', len(data)))
                 self.handler.response_headers_list.append('Content-Length')
-        elif not hasattr(self.handler, 'provided_content_length'):
+        elif not hasattr(self.handler, 'provided_content_length') or self.handler.provided_content_length is None:
             # Gevent 1.0bX
             l = len(data)
             self.handler.provided_content_length = l
             self.handler.response_headers.append(('Content-Length', l))
 
-        self.handler.write(data)
+        self.handler.write_smart(data)
 
     def start_response(self, status, headers, **kwargs):
         if "Content-Type" not in [x[0] for x in headers]:
